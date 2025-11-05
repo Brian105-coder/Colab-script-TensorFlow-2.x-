@@ -1,0 +1,108 @@
+# Colab-ready script: train -> convert -> evaluate
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing import image_dataset_from_directory
+import pathlib
+import numpy as np
+
+# CONFIG
+DATA_DIR = "/content/dataset"  # update to your dataset path
+IMG_SIZE = (160, 160)
+BATCH_SIZE = 32
+EPOCHS = 10
+TFLITE_MODEL_PATH = "/content/recycle_model.tflite"
+
+# DATA
+train_ds = image_dataset_from_directory(DATA_DIR + "/train", image_size=IMG_SIZE, batch_size=BATCH_SIZE)
+val_ds   = image_dataset_from_directory(DATA_DIR + "/val", image_size=IMG_SIZE, batch_size=BATCH_SIZE)
+class_names = train_ds.class_names
+num_classes = len(class_names)
+
+# PREFETCH
+AUTOTUNE = tf.data.AUTOTUNE
+train_ds = train_ds.prefetch(buffer_size=AUTOTUNE)
+val_ds   = val_ds.prefetch(buffer_size=AUTOTUNE)
+
+# MODEL (MobileNetV2 base)
+base_model = tf.keras.applications.MobileNetV2(input_shape=IMG_SIZE + (3,),
+                                               include_top=False,
+                                               weights='imagenet')
+base_model.trainable = False  # transfer learning
+
+inputs = tf.keras.Input(shape=IMG_SIZE + (3,))
+x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
+x = base_model(x, training=False)
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dropout(0.2)(x)
+outputs = layers.Dense(num_classes, activation='softmax')(x)
+model = tf.keras.Model(inputs, outputs)
+
+model.compile(optimizer=tf.keras.optimizers.Adam(1e-3),
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+# TRAIN
+history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
+
+# OPTIONAL: fine-tune
+base_model.trainable = True
+for layer in base_model.layers[:-30]:
+    layer.trainable = False
+model.compile(optimizer=tf.keras.optimizers.Adam(1e-5),
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+history_f = model.fit(train_ds, validation_data=val_ds, epochs=5)
+
+# SAVE
+model.save("/content/recycle_model_saved")
+
+# CONVERT TO TFLITE (float32)
+converter = tf.lite.TFLiteConverter.from_saved_model("/content/recycle_model_saved")
+# Optional: post-training quantization for smaller model and faster inference:
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+# If you want full integer quantization you need a representative dataset:
+def representative_dataset_gen():
+    for images, _ in train_ds.take(100):
+        yield [tf.cast(images, tf.float32)]
+converter.representative_dataset = representative_dataset_gen
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type = tf.uint8
+converter.inference_output_type = tf.uint8
+
+tflite_model = converter.convert()
+open(TFLITE_MODEL_PATH, "wb").write(tflite_model)
+print("TFLite model saved to:", TFLITE_MODEL_PATH)
+
+# EVALUATE TFLITE MODEL (simple)
+import tflite_runtime.interpreter as tflite  # on Colab you may need to pip install tflite-runtime
+interpreter = tflite.Interpreter(model_path=TFLITE_MODEL_PATH)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# function to run inference
+def run_tflite_inference(img_array):
+    # assuming uint8 input, adjust if different
+    inp = tf.image.resize(img_array, IMG_SIZE).numpy()
+    if input_details[0]['dtype'] == np.uint8:
+        inp = (inp).astype(np.uint8)
+    inp = np.expand_dims(inp, axis=0)
+    interpreter.set_tensor(input_details[0]['index'], inp)
+    interpreter.invoke()
+    out = interpreter.get_tensor(output_details[0]['index'])
+    return out
+
+# Test on a small batch from val_ds
+correct = 0
+total = 0
+for images, labels in val_ds.take(20):
+    for i in range(images.shape[0]):
+        pred = run_tflite_inference(images[i])
+        pred_label = np.argmax(pred)
+        if pred_label == labels.numpy()[i]:
+            correct += 1
+        total += 1
+print(f"TFLite approx accuracy on sample: {correct/total:.3f} ({correct}/{total})")
