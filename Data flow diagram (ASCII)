@@ -1,0 +1,15 @@
+[Sensor Nodes] --(LoRa/WiFi)--> [Local Gateway/Edge Device]
+       |                                     |
+       v                                     v
+ (raw data filtering)                  (edge inference: alerts)
+       |                                     |
+       +------> [Secure Uplink] -----------> [Cloud Backend]
+                       |                         |
+                       v                         v
+                 [Model Training]          [Dashboard/API]
+                       |                         |
+                       v                         v
+                [Updated Model]             [Farmer App]
+                       |
+                       v
+               [Edge Model Deployment]
