@@ -1,0 +1,32 @@
+# qiskit_vqe_example.py
+from qiskit import Aer, execute
+from qiskit import QuantumCircuit
+from qiskit.utils import QuantumInstance
+from qiskit.algorithms.optimizers import SPSA
+from qiskit.algorithms import VQE
+from qiskit.circuit.library import TwoLocal
+from qiskit.opflow import PauliSumOp
+import numpy as np
+
+# Simple example operator (toy Hamiltonian): H = Z0 + Z1 + 0.5 X0 X1
+pauli_dict = {
+    'Z0': 1.0,
+    'Z1': 1.0,
+    'X0X1': 0.5
+}
+# For demonstration, use a simple PauliSumOp
+ham = PauliSumOp.from_list([("ZII", 1.0), ("IZI", 1.0)])  # toy; adapt to real problem
+
+# Ansatz
+ansatz = TwoLocal(num_qubits=2, rotation_blocks='ry', entanglement_blocks='cz', reps=3)
+
+# Optimizer
+optimizer = SPSA(maxiter=100)
+
+# Backend
+backend = Aer.get_backend('statevector_simulator')
+qi = QuantumInstance(backend, shots=1024)
+
+vqe = VQE(ansatz, optimizer=optimizer, quantum_instance=qi)
+result = vqe.compute_minimum_eigenvalue(ham)
+print("VQE result:", result)
